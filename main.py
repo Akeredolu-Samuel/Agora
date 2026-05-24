@@ -123,10 +123,31 @@ async def delete_private_key_callback(update: Update, context: ContextTypes.DEFA
                 "⚠️ Bot could not auto-delete this message. Please delete/clear it manually for safety!"
             )
 
+import threading
+from http.server import SimpleHTTPRequestHandler
+import socketserver
+
 if __name__ == '__main__':
     if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN_HERE":
         print("Please set TELEGRAM_BOT_TOKEN in your .env file")
         exit(1)
+
+    # Start a dummy HTTP server on port 7860 (required by Hugging Face / Render to show "Running")
+    def run_dummy_server():
+        port = int(os.getenv("PORT", 7860))
+        class DummyHandler(SimpleHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-type", "text/plain")
+                self.end_headers()
+                self.wfile.write(b"Agora Bot is running!")
+                
+        socketserver.TCPServer.allow_reuse_address = True
+        with socketserver.TCPServer(("", port), DummyHandler) as httpd:
+            print(f"Dummy server running on port {port}")
+            httpd.serve_forever()
+
+    threading.Thread(target=run_dummy_server, daemon=True).start()
         
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     
