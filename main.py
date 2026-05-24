@@ -217,5 +217,13 @@ if __name__ == '__main__':
     application.add_handler(CallbackQueryHandler(delete_private_key_callback))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     
+    # Render defaults to Python 3.14 where asyncio.get_event_loop() throws an error 
+    # if no loop exists yet. We explicitly create and set one here.
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
     print("Bot is running...")
     application.run_polling()
