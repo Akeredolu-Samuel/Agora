@@ -16,14 +16,36 @@ def _get_client():
         )
     return _client
 
+import re
+
 def parse_intent(text: str) -> dict:
     """
     Parses a user's natural language text and returns a structured intent.
     Supported actions:
     - send: { "action": "send", "amount": <float>, "currency": "USDC", "recipient": "<name or address>" }
     - save_contact: { "action": "save_contact", "name": "<name>", "address": "<address>" }
+    - tip: { "action": "tip", "amount": <float>, "currency": "USDC" }
     - unknown: { "action": "unknown", "message": "..." }
     """
+    # 1. Quick regex fallback for perfect accuracy on common commands
+    text_lower = text.lower().strip()
+    
+    # Match: save 0x... as name
+    save_match = re.search(r"save(?: address)?\s+(0x[a-fA-F0-9]{40})\s+(?:as|for)?\s*(\w+)", text, re.IGNORECASE)
+    if save_match:
+        return {"action": "save_contact", "address": save_match.group(1), "name": save_match.group(2).lower()}
+        
+    # Match: pay 5 to 0x...
+    pay_match = re.search(r"(?:pay|send)\s+([0-9.]+)(?:\s*usdc)?\s*(?:to)?\s*(0x[a-fA-F0-9]{40}|\w+)", text, re.IGNORECASE)
+    if pay_match:
+        return {"action": "send", "amount": float(pay_match.group(1)), "currency": "USDC", "recipient": pay_match.group(2).lower()}
+        
+    # Match: tip 5
+    tip_match = re.search(r"(?:tip)\s+([0-9.]+)", text, re.IGNORECASE)
+    if tip_match:
+        return {"action": "tip", "amount": float(tip_match.group(1)), "currency": "USDC"}
+
+    # 2. DeepSeek AI parsing for complex commands
     system_prompt = """You are a natural language parser for a crypto payment bot on Telegram.
 The user wants to either save a contact address, send crypto (USDC) to someone, or tip someone in a group chat.
 Extract the intent and output ONLY raw JSON, with no markdown formatting.
