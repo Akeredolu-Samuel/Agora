@@ -30,11 +30,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     help_text = (
         "\n\n"
-        "📖 **What I can do:**\n"
-        "• **Save a contact:** `save address 0x... for [name]`\n"
-        "• **Send USDC payments:** `send [amount] USDC to [name]`\n"
-        "• **Send directly to address:** `send [amount] USDC to 0x...`\n\n"
-        "💡 *Tip: I parse natural language! You can type normally, e.g., \"pay 10 usdc to Alice\"*"
+        "📖 **Exact Commands:**\n"
+        "• **View your QR code:** `/qr`\n"
+        "• **Save a contact:** `save 0x... as [name]`\n"
+        "• **Send USDC to a contact:** `pay [amount] to [name]`\n"
+        "• **Send directly to address:** `pay [amount] to 0x...`\n"
+        "• **Tip someone in a group chat:** Reply to their message with `tip [amount]`\n\n"
+        "💡 *Tip: I parse natural language! If you make a typo, my AI will figure it out.*"
     )
 
     if wallet_info:
