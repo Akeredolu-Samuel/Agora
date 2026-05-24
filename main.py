@@ -149,7 +149,15 @@ if __name__ == '__main__':
 
     threading.Thread(target=run_dummy_server, daemon=True).start()
         
-    application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    application = (
+        ApplicationBuilder()
+        .token(TELEGRAM_TOKEN)
+        .connect_timeout(30.0)
+        .read_timeout(30.0)
+        .write_timeout(30.0)
+        .pool_timeout(30.0)
+        .build()
+    )
     
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CallbackQueryHandler(delete_private_key_callback))
