@@ -25,16 +25,18 @@ def parse_intent(text: str) -> dict:
     - unknown: { "action": "unknown", "message": "..." }
     """
     system_prompt = """You are a natural language parser for a crypto payment bot on Telegram.
-The user wants to either save a contact address or send crypto (USDC) to someone.
+The user wants to either save a contact address, send crypto (USDC) to someone, or tip someone in a group chat.
 Extract the intent and output ONLY raw JSON, with no markdown formatting.
 
 Possible JSON outputs:
 1. {"action": "send", "amount": 10.5, "currency": "USDC", "recipient": "david"}
 2. {"action": "save_contact", "name": "david", "address": "0x1234567890abcdef1234567890abcdef12345678"}
-3. {"action": "unknown"}
+3. {"action": "tip", "amount": 5.0, "currency": "USDC"}
+4. {"action": "unknown"}
 
 If the user says something like "save address 0xabc for david", output save_contact.
 If the user says "send 10 usdc to david", output send.
+If the user says "tip 5 usdc" or "send 5 usdc as a tip", output tip.
 """
     try:
         response = _get_client().chat.completions.create(

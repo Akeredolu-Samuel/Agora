@@ -3,6 +3,9 @@ import asyncio
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+from telegram.request import HTTPXRequest
+import qrcode
+import io
 
 import db
 import nlp
@@ -44,14 +47,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.message.reply_text(
+        # Generate QR code for the address
+        qr = qrcode.QRCode(version=1, box_size=10, border=5)
+        qr.add_data(address)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        bio = io.BytesIO()
+        img.save(bio, "PNG")
+        bio.seek(0)
+        
+        caption = (
             f"Welcome to Agora Arc!\n\n"
             f"I have generated a new Web3 wallet for you on the Arc blockchain.\n\n"
             f"**Address:** `{address}`\n"
             f"**Private Key:** `{private_key}`\n\n"
             f"🚨 **CRITICAL: Save this private key somewhere safe! If you lose it, you lose access to your funds.**\n\n"
             f"To start sending payments, please fund your address with USDC (and gas) on the Arc Testnet."
-            f"{help_text}",
+            f"{help_text}"
+        )
+        
+        await update.message.reply_photo(
+            photo=bio,
+            caption=caption,
             parse_mode='Markdown',
             reply_markup=reply_markup
         )
@@ -107,8 +124,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             await update.message.reply_text(f"❌ Transfer failed: {e}")
             
+    elif action == "tip":
+        amount = intent.get("amount")
+        if not update.message.reply_to_message:
+            await update.message.reply_text("❌ To tip someone, you must reply to their message in the group chat!")
+            return
+            
+        target_user_id = update.message.reply_to_message.from_user.id
+        target_wallet = db.get_user_wallet(target_user_id)
+        
+        if not target_wallet:
+            await update.message.reply_text(f"❌ The person you replied to does not have an Agora wallet yet. Tell them to message me and type /start!")
+            return
+            
+        to_address = target_wallet["wallet_address"]
+        await update.message.reply_text(f"Initiating tip of {amount} USDC to {update.message.reply_to_message.from_user.first_name}...")
+        
+        try:
+            tx_hash = web3_client.send_usdc(wallet_info["private_key"], to_address, float(amount))
+            tx_link = f"https://testnet.arcscan.app/tx/{tx_hash}"
+            await update.message.reply_text(f"✅ Tip successful! 🎉\n\n[View Transaction on ArcScan]({tx_link})", parse_mode='Markdown')
+        except Exception as e:
+            await update.message.reply_text(f"❌ Tip failed: {e}")
+            
     else:
-        await update.message.reply_text("I didn't understand that command. Try saving an address or sending USDC.")
+        await update.message.reply_text("I didn't understand that command. Try saving an address, sending USDC, or tipping.")
 
 async def delete_private_key_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -149,13 +189,19 @@ if __name__ == '__main__':
 
     threading.Thread(target=run_dummy_server, daemon=True).start()
         
+    t_request = HTTPXRequest(
+        connection_pool_size=10,
+        connect_timeout=100.0,
+        read_timeout=100.0,
+        write_timeout=100.0,
+        pool_timeout=100.0
+    )
+    
     application = (
         ApplicationBuilder()
         .token(TELEGRAM_TOKEN)
-        .connect_timeout(30.0)
-        .read_timeout(30.0)
-        .write_timeout(30.0)
-        .pool_timeout(30.0)
+        .request(t_request)
+        .get_updates_request(t_request)
         .build()
     )
     
