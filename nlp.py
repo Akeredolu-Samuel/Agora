@@ -5,12 +5,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+_client = None
 
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=OPENROUTER_API_KEY,
-)
+def _get_client():
+    global _client
+    if _client is None:
+        _client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=os.getenv("OPENROUTER_API_KEY"),
+        )
+    return _client
 
 def parse_intent(text: str) -> dict:
     """
@@ -33,7 +37,7 @@ If the user says something like "save address 0xabc for david", output save_cont
 If the user says "send 10 usdc to david", output send.
 """
     try:
-        response = client.chat.completions.create(
+        response = _get_client().chat.completions.create(
             model="deepseek/deepseek-chat",
             messages=[
                 {"role": "system", "content": system_prompt},
