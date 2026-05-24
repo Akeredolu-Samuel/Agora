@@ -34,9 +34,11 @@ Possible JSON outputs:
 3. {"action": "tip", "amount": 5.0, "currency": "USDC"}
 4. {"action": "unknown"}
 
-If the user says something like "save address 0xabc for david", output save_contact.
-If the user says "send 10 usdc to david", output send.
-If the user says "tip 5 usdc" or "send 5 usdc as a tip", output tip.
+Rules:
+- If the user says "save 0x... johnny" or "save address 0x... for david", output save_contact.
+- If the user says "send 10 usdc to david" or "pay 5 to 0x...", output send.
+- If the user says "tip 5 usdc" or "send 5 usdc as a tip", output tip.
+- Be highly flexible with typos. If the intent is obvious, extract it.
 """
     try:
         response = _get_client().chat.completions.create(

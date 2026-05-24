@@ -171,6 +171,30 @@ async def delete_private_key_callback(update: Update, context: ContextTypes.DEFA
                 "⚠️ Bot could not auto-delete this message. Please delete/clear it manually for safety!"
             )
 
+async def show_qr(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    wallet_info = db.get_user_wallet(user_id)
+    if not wallet_info:
+        await update.message.reply_text("Please type /start first to generate your wallet.")
+        return
+        
+    address = wallet_info["wallet_address"]
+    
+    # Generate QR code for the address
+    qr = qrcode.QRCode(version=1, box_size=10, border=5)
+    qr.add_data(address)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    bio = io.BytesIO()
+    img.save(bio, "PNG")
+    bio.seek(0)
+    
+    await update.message.reply_photo(
+        photo=bio,
+        caption=f"📷 **Your Agora Arc Wallet Address:**\n`{address}`\n\nFund this address with USDC on the Arc Testnet.",
+        parse_mode='Markdown'
+    )
+
 import threading
 from http.server import SimpleHTTPRequestHandler
 import socketserver
@@ -214,6 +238,7 @@ if __name__ == '__main__':
     )
     
     application.add_handler(CommandHandler('start', start))
+    application.add_handler(CommandHandler('qr', show_qr))
     application.add_handler(CallbackQueryHandler(delete_private_key_callback))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     
