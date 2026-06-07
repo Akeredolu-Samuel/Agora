@@ -62,7 +62,8 @@ WELCOME_BACK_TEXT = (
     "📖 *Commands*\n"
     "• `/balance` — Check your wallet balance\n"
     "• `/history` — View recent transactions\n"
-    "• `/qr` — Show your wallet QR code\n\n"
+    "• `/qr` — Show your wallet QR code\n"
+    "• `/private_key` — Export your private key\n\n"
     "💬 *Natural Language Commands*\n"
     "• `pay 10 to John` — Send USDC\n"
     "• `save 0x... as John` — Save a contact\n"
@@ -87,7 +88,8 @@ NEW_WALLET_TEXT = (
     "📖 *Commands*\n"
     "• `/balance` — Check your wallet balance\n"
     "• `/history` — View recent transactions\n"
-    "• `/qr` — Show your wallet QR code\n\n"
+    "• `/qr` — Show your wallet QR code\n"
+    "• `/private_key` — Export your private key\n\n"
     "💬 *Natural Language Commands*\n"
     "• `pay 10 to John` — Send USDC\n"
     "• `save 0x... as John` — Save a contact\n"
@@ -217,6 +219,32 @@ async def show_qr(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Fund this address with USDC on the Arc Testnet."
         ),
         parse_mode="Markdown",
+    )
+
+# ---------------------------------------------------------------------------
+# /private_key
+# ---------------------------------------------------------------------------
+
+async def export_private_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id     = update.effective_user.id
+    wallet_info = db.get_user_wallet(user_id)
+    if not wallet_info:
+        await update.message.reply_text("Please type /start first to generate your wallet.")
+        return
+
+    private_key = wallet_info["private_key"]
+    
+    keyboard = [[
+        InlineKeyboardButton("✅ Saved (Delete Message)", callback_data="delete_pk_msg")
+    ]]
+    
+    await update.message.reply_text(
+        "🚨 *CRITICAL SECURITY WARNING* 🚨\n\n"
+        "Anyone with this private key can steal your funds. Never share it with anyone!\n\n"
+        f"🔑 *Your Private Key:*\n`{private_key}`\n\n"
+        "Click the button below to delete this message once you have saved it securely.",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 # ---------------------------------------------------------------------------
@@ -384,9 +412,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await query.message.delete()
         except Exception:
-            await query.message.edit_caption(
-                "⚠️ Bot couldn't delete this message — please delete it manually for safety!"
-            )
+            try:
+                await query.message.edit_text("⚠️ Message couldn't be deleted automatically. Please delete it manually!")
+            except:
+                await query.message.edit_caption("⚠️ Message couldn't be deleted automatically. Please delete it manually!")
         return
 
     # ── Confirm send / tip ──────────────────────────────────────────────────
@@ -484,6 +513,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("balance", show_balance))
     app.add_handler(CommandHandler("history", show_history))
     app.add_handler(CommandHandler("qr",      show_qr))
+    app.add_handler(CommandHandler("private_key", export_private_key))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
 
