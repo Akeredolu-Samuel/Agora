@@ -4,3 +4,5 @@ openai==1.14.3
 python-dotenv==1.0.1
 py-solc-x==2.0.2
 qrcode[pil]==7.4.2
+cryptography==42.0.5
+requests==2.31.0

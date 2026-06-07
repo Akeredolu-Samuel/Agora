@@ -1,256 +1,497 @@
 import os
 import asyncio
 import socket
-
-# Force IPv4 to fix Hugging Face Spaces network connect errors (broken IPv6)
-old_getaddrinfo = socket.getaddrinfo
-def new_getaddrinfo(*args, **kwargs):
-    responses = old_getaddrinfo(*args, **kwargs)
-    return [response for response in responses if response[0] == socket.AF_INET]
-socket.getaddrinfo = new_getaddrinfo
-from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-from telegram.request import HTTPXRequest
-import qrcode
 import io
+
+# Force IPv4 (fixes broken IPv6 on Hugging Face / Render)
+_old_getaddrinfo = socket.getaddrinfo
+def _new_getaddrinfo(*args, **kwargs):
+    return [r for r in _old_getaddrinfo(*args, **kwargs) if r[0] == socket.AF_INET]
+socket.getaddrinfo = _new_getaddrinfo
+
+from dotenv import load_dotenv
+import qrcode
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    filters,
+    ContextTypes,
+)
+from telegram.request import HTTPXRequest
 
 import db
 import nlp
 import web3_client
 
 load_dotenv()
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN")
+ARCSCAN_BASE_URL = "https://testnet.arcscan.app"
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    
-    # Check if user already has a wallet
-    wallet_info = db.get_user_wallet(user_id)
-    
-    help_text = (
-        "\n\n"
-        "📖 **Exact Commands:**\n"
-        "• **View your QR code:** `/qr`\n"
-        "• **Save a contact:** `save 0x... as [name]`\n"
-        "• **Send USDC to a contact:** `pay [amount] to [name]`\n"
-        "• **Send directly to address:** `pay [amount] to 0x...`\n"
-        "• **Tip someone in a group chat:** Reply to their message with `tip [amount]`\n\n"
-        "💡 *Tip: I parse natural language! If you make a typo, my AI will figure it out.*"
-    )
+# ---------------------------------------------------------------------------
+# Helper utilities
+# ---------------------------------------------------------------------------
 
-    if wallet_info:
-        await update.message.reply_text(
-            f"Welcome back to Agora Arc!\n\n"
-            f"Your Wallet Address is: `{wallet_info['wallet_address']}`\n"
-            f"Please ensure it is funded with USDC on the Arc Testnet."
-            f"{help_text}",
-            parse_mode='Markdown'
-        )
-    else:
-        # Generate new wallet
-        address, private_key = web3_client.generate_wallet()
-        db.save_user_wallet(user_id, address, private_key)
-        
-        keyboard = [
-            [InlineKeyboardButton("🗑️ Delete/Hide This Private Key Message", callback_data="delete_private_key_msg")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        # Generate QR code for the address
-        qr = qrcode.QRCode(version=1, box_size=10, border=5)
-        qr.add_data(address)
-        qr.make(fit=True)
-        img = qr.make_image(fill_color="black", back_color="white")
-        bio = io.BytesIO()
-        img.save(bio, "PNG")
-        bio.seek(0)
-        
-        caption = (
-            f"Welcome to Agora Arc!\n\n"
-            f"I have generated a new Web3 wallet for you on the Arc blockchain.\n\n"
-            f"**Address:** `{address}`\n"
-            f"**Private Key:** `{private_key}`\n\n"
-            f"🚨 **CRITICAL: Save this private key somewhere safe! If you lose it, you lose access to your funds.**\n\n"
-            f"To start sending payments, please fund your address with USDC (and gas) on the Arc Testnet."
-            f"{help_text}"
-        )
-        
-        await update.message.reply_photo(
-            photo=bio,
-            caption=caption,
-            parse_mode='Markdown',
-            reply_markup=reply_markup
-        )
+def _short(addr: str) -> str:
+    """0x9572...916a"""
+    return addr[:6] + "..." + addr[-4:]
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text = update.message.text
-    
-    wallet_info = db.get_user_wallet(user_id)
-    if not wallet_info:
-        await update.message.reply_text("Please type /start first to generate your wallet.")
-        return
+def _tx_link(tx_hash: str) -> str:
+    return f"{ARCSCAN_BASE_URL}/tx/{tx_hash}"
 
-    # Parse intent via DeepSeek
-    await update.message.reply_text("Thinking...")
-    intent = nlp.parse_intent(text)
-    action = intent.get("action")
-    
-    if action == "save_contact":
-        name = intent.get("name")
-        address = intent.get("address")
-        if not name or not address:
-            await update.message.reply_text("Could not extract name or address. Try 'save address 0x... for david'")
-            return
-            
-        db.save_contact(user_id, name, address)
-        await update.message.reply_text(f"✅ Saved {name} -> {address}")
-        
-    elif action == "send":
-        recipient = intent.get("recipient")
-        amount = intent.get("amount")
-        
-        if not recipient or not amount:
-            await update.message.reply_text("Could not extract amount or recipient. Try 'send 10 usdc to david'")
-            return
-            
-        # Check if recipient is a saved name
-        to_address = db.get_contact_address(user_id, recipient)
-        if not to_address:
-            # Maybe the recipient IS an address
-            if str(recipient).startswith("0x") and len(str(recipient)) == 42:
-                to_address = recipient
-            else:
-                await update.message.reply_text(f"❌ Contact '{recipient}' not found. Please save it first.")
-                return
-        
-        await update.message.reply_text(f"Initiating transfer of {amount} USDC to {recipient} ({to_address})...")
-        
-        try:
-            tx_hash = web3_client.send_usdc(wallet_info["private_key"], to_address, float(amount))
-            tx_link = f"https://testnet.arcscan.app/tx/{tx_hash}"
-            await update.message.reply_text(f"✅ Transfer successful!\n\n[View Transaction on ArcScan]({tx_link})", parse_mode='Markdown')
-        except Exception as e:
-            await update.message.reply_text(f"❌ Transfer failed: {e}")
-            
-    elif action == "tip":
-        amount = intent.get("amount")
-        if not update.message.reply_to_message:
-            await update.message.reply_text("❌ To tip someone, you must reply to their message in the group chat!")
-            return
-            
-        target_user_id = update.message.reply_to_message.from_user.id
-        target_wallet = db.get_user_wallet(target_user_id)
-        
-        if not target_wallet:
-            await update.message.reply_text(f"❌ The person you replied to does not have an Agora wallet yet. Tell them to message me and type /start!")
-            return
-            
-        to_address = target_wallet["wallet_address"]
-        await update.message.reply_text(f"Initiating tip of {amount} USDC to {update.message.reply_to_message.from_user.first_name}...")
-        
-        try:
-            tx_hash = web3_client.send_usdc(wallet_info["private_key"], to_address, float(amount))
-            tx_link = f"https://testnet.arcscan.app/tx/{tx_hash}"
-            await update.message.reply_text(f"✅ Tip successful! 🎉\n\n[View Transaction on ArcScan]({tx_link})", parse_mode='Markdown')
-        except Exception as e:
-            await update.message.reply_text(f"❌ Tip failed: {e}")
-            
-    else:
-        await update.message.reply_text("I didn't understand that command. Try saving an address, sending USDC, or tipping.")
-
-async def delete_private_key_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    if query.data == "delete_private_key_msg":
-        try:
-            await query.message.delete()
-        except Exception as e:
-            # Fallback if bot lacks permissions
-            await query.message.edit_text(
-                "⚠️ Bot could not auto-delete this message. Please delete/clear it manually for safety!"
-            )
-
-async def show_qr(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    wallet_info = db.get_user_wallet(user_id)
-    if not wallet_info:
-        await update.message.reply_text("Please type /start first to generate your wallet.")
-        return
-        
-    address = wallet_info["wallet_address"]
-    
-    # Generate QR code for the address
+def _qr_bytes(data: str) -> io.BytesIO:
     qr = qrcode.QRCode(version=1, box_size=10, border=5)
-    qr.add_data(address)
+    qr.add_data(data)
     qr.make(fit=True)
     img = qr.make_image(fill_color="black", back_color="white")
     bio = io.BytesIO()
     img.save(bio, "PNG")
     bio.seek(0)
-    
-    await update.message.reply_photo(
-        photo=bio,
-        caption=f"📷 **Your Agora Arc Wallet Address:**\n`{address}`\n\nFund this address with USDC on the Arc Testnet.",
-        parse_mode='Markdown'
+    return bio
+
+WELCOME_BACK_TEXT = (
+    "👋 *Welcome back to Agora Arc!*\n\n"
+    "Your Web3 payment wallet is ready and waiting.\n\n"
+    "━━━━━━━━━━━━━━━\n"
+    "📖 *Commands*\n"
+    "• `/balance` — Check your wallet balance\n"
+    "• `/history` — View recent transactions\n"
+    "• `/qr` — Show your wallet QR code\n\n"
+    "💬 *Natural Language Commands*\n"
+    "• `pay 10 to John` — Send USDC\n"
+    "• `save 0x... as John` — Save a contact\n"
+    "• `swap 10 usdc for eurc` — Swap tokens\n"
+    "• Reply to a message with `tip 5` — Tip someone\n"
+    "━━━━━━━━━━━━━━━\n\n"
+    "🐦 *Follow us on X for updates!*\n"
+    "[👉 @agora\\_pay](https://x.com/agora_pay)\n"
+    "👤 *Founder:* [@samwissyy](https://x.com/samwissyy)"
+)
+
+NEW_WALLET_TEXT = (
+    "🎉 *Welcome to Agora Arc!*\n\n"
+    "I've created a brand-new Web3 wallet for you on the *Arc Blockchain*.\n\n"
+    "━━━━━━━━━━━━━━━\n"
+    "📬 *Your Address:*\n`{address}`\n\n"
+    "🔑 *Private Key:*\n`{private_key}`\n"
+    "━━━━━━━━━━━━━━━\n\n"
+    "🚨 *CRITICAL — Save your private key somewhere safe!*\n"
+    "If you lose it, you lose access to your funds forever.\n\n"
+    "Fund this address with USDC on the Arc Testnet to get started.\n\n"
+    "📖 *Commands*\n"
+    "• `/balance` — Check your wallet balance\n"
+    "• `/history` — View recent transactions\n"
+    "• `/qr` — Show your wallet QR code\n\n"
+    "💬 *Natural Language Commands*\n"
+    "• `pay 10 to John` — Send USDC\n"
+    "• `save 0x... as John` — Save a contact\n"
+    "• `swap 10 usdc for eurc` — Swap tokens\n"
+    "• Reply to a message with `tip 5` — Tip someone\n"
+    "━━━━━━━━━━━━━━━\n\n"
+    "🐦 *Follow us on X for updates!*\n"
+    "[👉 @agora\\_pay](https://x.com/agora_pay)\n"
+    "👤 *Founder:* [@samwissyy](https://x.com/samwissyy)"
+)
+
+# ---------------------------------------------------------------------------
+# /start — persistent wallet + welcome message
+# ---------------------------------------------------------------------------
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id     = update.effective_user.id
+    first_name  = update.effective_user.first_name or "friend"
+    wallet_info = db.get_user_wallet(user_id)
+
+    if wallet_info:
+        # Returning user — show wallet address, never regenerate
+        address = wallet_info["wallet_address"]
+        await update.message.reply_photo(
+            photo=_qr_bytes(address),
+            caption=(
+                f"👋 Hey *{first_name}*!\n\n"
+                f"📬 *Your Wallet:*\n`{address}`\n\n"
+            ) + WELCOME_BACK_TEXT,
+            parse_mode="Markdown",
+        )
+    else:
+        # New user — generate wallet once and store it encrypted
+        address, private_key = web3_client.generate_wallet()
+        db.save_user_wallet(user_id, address, private_key)
+
+        keyboard = [[
+            InlineKeyboardButton("🗑️ Delete this private key message", callback_data="delete_pk_msg")
+        ]]
+        await update.message.reply_photo(
+            photo=_qr_bytes(address),
+            caption=NEW_WALLET_TEXT.format(address=address, private_key=private_key),
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+
+# ---------------------------------------------------------------------------
+# /balance
+# ---------------------------------------------------------------------------
+
+async def show_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id     = update.effective_user.id
+    wallet_info = db.get_user_wallet(user_id)
+    if not wallet_info:
+        await update.message.reply_text("Please type /start first to generate your wallet.")
+        return
+
+    address = wallet_info["wallet_address"]
+    await update.message.reply_text("⏳ Fetching balances...")
+
+    usdc    = web3_client.get_usdc_balance(address)
+    eurc    = web3_client.get_eurc_balance(address)
+    native  = web3_client.get_native_balance(address)
+
+    await update.message.reply_text(
+        f"💰 *Wallet Balance*\n\n"
+        f"• USDC:  `{usdc:,.4f}`\n"
+        f"• EURC:  `{eurc:,.4f}`\n"
+        f"• Native (gas): `{native:,.6f}`\n\n"
+        f"📬 Address:\n`{address}`",
+        parse_mode="Markdown",
     )
 
-import threading
-from http.server import SimpleHTTPRequestHandler
-import socketserver
+# ---------------------------------------------------------------------------
+# /history
+# ---------------------------------------------------------------------------
 
-if __name__ == '__main__':
+async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id     = update.effective_user.id
+    wallet_info = db.get_user_wallet(user_id)
+    if not wallet_info:
+        await update.message.reply_text("Please type /start first to generate your wallet.")
+        return
+
+    address = wallet_info["wallet_address"]
+    await update.message.reply_text("⏳ Fetching transaction history...")
+
+    txs = web3_client.get_transaction_history(address, limit=10)
+    if not txs:
+        await update.message.reply_text(
+            "📭 No transactions found yet.\n\nFund your wallet and make your first payment!"
+        )
+        return
+
+    lines = ["📋 *Recent Transactions*\n"]
+    for tx in txs:
+        arrow = "⬆" if tx["type"] == "Sent" else "⬇"
+        link  = f"[View]({_tx_link(tx['tx_hash'])})"
+        lines.append(
+            f"{arrow} *{tx['type']}* {tx['amount']} {tx['symbol']} "
+            f"{'to' if tx['type'] == 'Sent' else 'from'} `{tx['counterparty']}` {link}"
+        )
+
+    await update.message.reply_text(
+        "\n".join(lines),
+        parse_mode="Markdown",
+        disable_web_page_preview=True,
+    )
+
+# ---------------------------------------------------------------------------
+# /qr
+# ---------------------------------------------------------------------------
+
+async def show_qr(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id     = update.effective_user.id
+    wallet_info = db.get_user_wallet(user_id)
+    if not wallet_info:
+        await update.message.reply_text("Please type /start first to generate your wallet.")
+        return
+
+    address = wallet_info["wallet_address"]
+    await update.message.reply_photo(
+        photo=_qr_bytes(address),
+        caption=(
+            f"📷 *Your Agora Arc Wallet*\n\n"
+            f"`{address}`\n\n"
+            f"Fund this address with USDC on the Arc Testnet."
+        ),
+        parse_mode="Markdown",
+    )
+
+# ---------------------------------------------------------------------------
+# Natural-language message handler
+# ---------------------------------------------------------------------------
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id     = update.effective_user.id
+    text        = update.message.text
+    wallet_info = db.get_user_wallet(user_id)
+
+    if not wallet_info:
+        await update.message.reply_text("Please type /start first to generate your wallet.")
+        return
+
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action='typing')
+    intent  = nlp.parse_intent(text)
+    action  = intent.get("action")
+
+    # ── Save contact ────────────────────────────────────────────────────────
+    if action == "save_contact":
+        name    = intent.get("name")
+        address = intent.get("address")
+        if not name or not address:
+            await update.message.reply_text(
+                "❌ Couldn't extract name or address. Try:\n`save 0x... as John`",
+                parse_mode="Markdown"
+            )
+            return
+        db.save_contact(user_id, name, address)
+        await update.message.reply_text(f"✅ Saved *{name}* → `{address}`", parse_mode="Markdown")
+
+    # ── Send USDC (with confirmation) ───────────────────────────────────────
+    elif action == "send":
+        recipient = intent.get("recipient")
+        amount    = intent.get("amount")
+
+        if not recipient or not amount:
+            await update.message.reply_text(
+                "❌ Couldn't parse amount or recipient. Try:\n`pay 10 to John`",
+                parse_mode="Markdown"
+            )
+            return
+
+        to_address = db.get_contact_address(user_id, str(recipient))
+        if not to_address:
+            if str(recipient).startswith("0x") and len(str(recipient)) == 42:
+                to_address = recipient
+            else:
+                await update.message.reply_text(
+                    f"❌ Contact *{recipient}* not found. Save it first with:\n`save 0x... as {recipient}`",
+                    parse_mode="Markdown"
+                )
+                return
+
+        # Store pending tx in user_data for the callback
+        context.user_data["pending_tx"] = {
+            "to_address": to_address,
+            "amount":     float(amount),
+            "memo":       "send",
+            "label":      str(recipient),
+        }
+
+        keyboard = [[
+            InlineKeyboardButton("✅ Confirm", callback_data="confirm_send"),
+            InlineKeyboardButton("❌ Cancel",  callback_data="cancel_send"),
+        ]]
+        await update.message.reply_text(
+            f"📤 *Payment Confirmation*\n\n"
+            f"You are sending:\n"
+            f"• Amount: *{amount} USDC*\n"
+            f"• To: *{recipient}*\n"
+            f"• Address: `{_short(to_address)}`\n\n"
+            f"Please confirm below.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+
+    # ── Tip (with confirmation) ──────────────────────────────────────────────
+    elif action == "tip":
+        amount = intent.get("amount")
+        if not update.message.reply_to_message:
+            await update.message.reply_text(
+                "❌ To tip someone, reply to their message in the group chat with `tip 5`.",
+                parse_mode="Markdown"
+            )
+            return
+
+        target_user    = update.message.reply_to_message.from_user
+        target_wallet  = db.get_user_wallet(target_user.id)
+        if not target_wallet:
+            await update.message.reply_text(
+                f"❌ *{target_user.first_name}* doesn't have an Agora wallet yet. "
+                f"Tell them to message me and type /start!",
+                parse_mode="Markdown"
+            )
+            return
+
+        to_address = target_wallet["wallet_address"]
+        context.user_data["pending_tx"] = {
+            "to_address": to_address,
+            "amount":     float(amount),
+            "memo":       "tip",
+            "label":      target_user.first_name,
+        }
+
+        keyboard = [[
+            InlineKeyboardButton("✅ Confirm", callback_data="confirm_send"),
+            InlineKeyboardButton("❌ Cancel",  callback_data="cancel_send"),
+        ]]
+        await update.message.reply_text(
+            f"🎁 *Tip Confirmation*\n\n"
+            f"You are tipping:\n"
+            f"• Amount: *{amount} USDC*\n"
+            f"• To: *{target_user.first_name}*\n"
+            f"• Address: `{_short(to_address)}`\n\n"
+            f"Please confirm below.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+
+    # ── Swap ────────────────────────────────────────────────────────────────
+    elif action == "swap":
+        from_token = intent.get("from_token", "USDC").upper()
+        to_token   = intent.get("to_token", "EURC").upper()
+        amount     = intent.get("amount")
+
+        if not amount:
+            await update.message.reply_text("❌ Couldn't parse swap amount. Try: `swap 10 usdc for eurc`",
+                                         parse_mode="Markdown")
+            return
+
+        await update.message.reply_text(
+            f"🔁 *Swap Feature Coming Soon!*\n\n"
+            f"You want to swap *{amount} {from_token}* → *{to_token}*.\n\n"
+            f"The AgoraSwap contract is being deployed to the Arc Testnet. "
+            f"Stay tuned — follow us on X for the announcement!\n\n"
+            f"🐦 [👉 @agora\\_pay](https://x.com/agora_pay)\n"
+            f"👤 *Founder:* [@samwissyy](https://x.com/samwissyy)",
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
+        )
+
+    # ── Unknown ─────────────────────────────────────────────────────────────
+    else:
+        await update.message.reply_text(
+            "🤷 I didn't understand that. Here are some things you can say:\n\n"
+            "• `pay 10 to John`\n"
+            "• `save 0x... as John`\n"
+            "• `swap 10 usdc for eurc`\n"
+            "• Reply to a message with `tip 5`"
+        )
+
+# ---------------------------------------------------------------------------
+# Callback query handler (confirmations + delete private key)
+# ---------------------------------------------------------------------------
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query   = update.callback_query
+    user_id = query.from_user.id
+    await query.answer()
+
+    # ── Delete private key message ──────────────────────────────────────────
+    if query.data == "delete_pk_msg":
+        try:
+            await query.message.delete()
+        except Exception:
+            await query.message.edit_caption(
+                "⚠️ Bot couldn't delete this message — please delete it manually for safety!"
+            )
+        return
+
+    # ── Confirm send / tip ──────────────────────────────────────────────────
+    if query.data == "confirm_send":
+        pending = context.user_data.get("pending_tx")
+        if not pending:
+            await query.message.edit_text("❌ Transaction expired. Please try again.")
+            return
+
+        wallet_info = db.get_user_wallet(user_id)
+        if not wallet_info:
+            await query.message.edit_text("❌ Wallet not found. Please type /start.")
+            return
+
+        await query.message.edit_text("⏳ Broadcasting transaction...")
+
+        try:
+            tx_hash = web3_client.send_usdc(
+                wallet_info["private_key"],
+                pending["to_address"],
+                pending["amount"],
+                memo=pending.get("memo", "send"),
+            )
+            emoji = "🎁" if pending.get("memo") == "tip" else "✅"
+            await query.message.edit_text(
+                f"{emoji} *Success!*\n\n"
+                f"Sent *{pending['amount']} USDC* to *{pending['label']}*\n\n"
+                f"[View on ArcScan]({_tx_link(tx_hash)})",
+                parse_mode="Markdown",
+                disable_web_page_preview=True,
+            )
+        except Exception as e:
+            await query.message.edit_text(f"❌ Transfer failed:\n`{e}`", parse_mode="Markdown")
+        finally:
+            context.user_data.pop("pending_tx", None)
+
+    # ── Cancel send ─────────────────────────────────────────────────────────
+    elif query.data == "cancel_send":
+        context.user_data.pop("pending_tx", None)
+        await query.message.edit_text("🚫 Transaction cancelled.")
+
+# ---------------------------------------------------------------------------
+# Dummy HTTP server (required by Hugging Face / Render to show "Running")
+# ---------------------------------------------------------------------------
+
+def _start_dummy_server():
+    import threading
+    import socketserver
+    from http.server import SimpleHTTPRequestHandler
+
+    port = int(os.getenv("PORT", 7860))
+
+    class _Handler(SimpleHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"Agora Bot is running!")
+        def log_message(self, *args):  # silence request logs
+            pass
+
+    socketserver.TCPServer.allow_reuse_address = True
+    server = socketserver.TCPServer(("", port), _Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    print(f"Dummy HTTP server running on port {port}")
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
     if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN_HERE":
-        print("Please set TELEGRAM_BOT_TOKEN in your .env file")
-        exit(1)
+        print("ERROR: Please set TELEGRAM_BOT_TOKEN in your .env file")
+        raise SystemExit(1)
 
-    # Start a dummy HTTP server on port 7860 (required by Hugging Face / Render to show "Running")
-    def run_dummy_server():
-        port = int(os.getenv("PORT", 7860))
-        class DummyHandler(SimpleHTTPRequestHandler):
-            def do_GET(self):
-                self.send_response(200)
-                self.send_header("Content-type", "text/plain")
-                self.end_headers()
-                self.wfile.write(b"Agora Bot is running!")
-                
-        socketserver.TCPServer.allow_reuse_address = True
-        with socketserver.TCPServer(("", port), DummyHandler) as httpd:
-            print(f"Dummy server running on port {port}")
-            httpd.serve_forever()
+    _start_dummy_server()
 
-    threading.Thread(target=run_dummy_server, daemon=True).start()
-        
     t_request = HTTPXRequest(
         connection_pool_size=10,
         connect_timeout=100.0,
         read_timeout=100.0,
         write_timeout=100.0,
-        pool_timeout=100.0
+        pool_timeout=100.0,
     )
-    
-    application = (
+
+    app = (
         ApplicationBuilder()
         .token(TELEGRAM_TOKEN)
         .request(t_request)
         .get_updates_request(t_request)
         .build()
     )
-    
-    application.add_handler(CommandHandler('start', start))
-    application.add_handler(CommandHandler('qr', show_qr))
-    application.add_handler(CallbackQueryHandler(delete_private_key_callback))
-    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    
-    # Render defaults to Python 3.14 where asyncio.get_event_loop() throws an error 
-    # if no loop exists yet. We explicitly create and set one here.
+
+    app.add_handler(CommandHandler("start",   start))
+    app.add_handler(CommandHandler("balance", show_balance))
+    app.add_handler(CommandHandler("history", show_history))
+    app.add_handler(CommandHandler("qr",      show_qr))
+    app.add_handler(CallbackQueryHandler(handle_callback))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+
     try:
         loop = asyncio.get_event_loop()
     except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        
-    print("Bot is running...")
-    application.run_polling()
+
+    print("Agora Bot is running...")
+    app.run_polling()
