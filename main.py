@@ -71,7 +71,7 @@ WELCOME_BACK_TEXT = (
     "• Reply to a message with `tip 5` — Tip someone\n"
     "━━━━━━━━━━━━━━━\n\n"
     "🐦 *Follow us on X for updates!*\n"
-    "[👉 @agora\\_pay](https://x.com/agora_pay)\n"
+    "[👉 @agora\\_payy](https://x.com/agora_payy)\n"
     "👤 *Founder:* [@samwissyy](https://x.com/samwissyy)"
 )
 
@@ -97,7 +97,7 @@ NEW_WALLET_TEXT = (
     "• Reply to a message with `tip 5` — Tip someone\n"
     "━━━━━━━━━━━━━━━\n\n"
     "🐦 *Follow us on X for updates!*\n"
-    "[👉 @agora\\_pay](https://x.com/agora_pay)\n"
+    "[👉 @agora\\_payy](https://x.com/agora_payy)\n"
     "👤 *Founder:* [@samwissyy](https://x.com/samwissyy)"
 )
 
@@ -382,7 +382,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"You want to swap *{amount} {from_token}* → *{to_token}*.\n\n"
             f"The AgoraSwap contract is being deployed to the Arc Testnet. "
             f"Stay tuned — follow us on X for the announcement!\n\n"
-            f"🐦 [👉 @agora\\_pay](https://x.com/agora_pay)\n"
+            f"🐦 [👉 @agora\\_payy](https://x.com/agora_payy)\n"
             f"👤 *Founder:* [@samwissyy](https://x.com/samwissyy)",
             parse_mode="Markdown",
             disable_web_page_preview=True,
